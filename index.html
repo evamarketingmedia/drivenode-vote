@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Drivenode Votazione</title>
+<link rel="stylesheet" href="assets/style.css" />
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+
+<div class="header">
+  <img src="assets/logo-circle.png" alt="Drivenode" class="logo-circle" />
+  <img src="assets/logo-wordmark.png" alt="Drivenode" class="logo-wordmark" />
+  <p id="event-title">Vota la tua auto preferita</p>
+</div>
+
+<div class="status-bar">
+  <div class="pill" id="status-pill">Caricamento…</div>
+  <div class="pill" id="votes-left-pill"></div>
+</div>
+
+<div id="content" class="grid-wrap">
+  <div class="center-msg">Caricamento votazione…</div>
+</div>
+
+<div class="footer-bar" id="footer-bar" style="display:none;">
+  <div class="vote-counter" id="vote-counter"></div>
+  <button class="btn-big" id="confirm-btn" disabled>Conferma voto</button>
+</div>
+
+<script src="assets/config.js"></script>
+<script>
+const DEVICE_KEY = "drivenode_voted_ids";
+const DEVICE_DONE_KEY = "drivenode_vote_done";
+
+let config = {};
+let items = [];
+let selected = [];
+let maxVotes = 3;
+
+async function loadConfig() {
+  const { data } = await supabaseClient.from("config").select("*");
+  config = {};
+  data.forEach(r => config[r.key] = r.value);
+  maxVotes = parseInt(config.max_votes_per_person || "3", 10);
+  document.getElementById("event-title").textContent = config.event_title || "Vota la tua auto preferita";
+}
+
+async function loadItems() {
+  const { data } = await supabaseClient
+    .from("items")
+    .select("*")
+    .eq("active", true)
+    .order("number", { ascending: true });
+  items = data || [];
+}
+
+function votingIsOpen() {
+  if (config.voting_open !== "true") return false;
+  if (config.voting_closes_at) {
+    const closesAt = new Date(config.voting_closes_at).getTime();
+    if (Date.now() > closesAt) return false;
+  }
+  return true;
+}
+
+function alreadyVoted() {
+  return localStorage.getItem(DEVICE_DONE_KEY) === "true";
+}
+
+function render() {
+  const statusPill = document.getElementById("status-pill");
+  const votesLeftPill = document.getElementById("votes-left-pill");
+  const content = document.getElementById("content");
+  const footerBar = document.getElementById("footer-bar");
+
+  if (alreadyVoted()) {
+    statusPill.textContent = "Voto registrato";
+    statusPill.className = "pill closed";
+    votesLeftPill.style.display = "none";
+    footerBar.style.display = "none";
+    content.innerHTML = `
+      <div class="center-msg">
+        <div class="big">✅</div>
+        <p>Grazie, il tuo voto è stato registrato!</p>
+        <a href="${config.redirect_url}" class="btn-big" style="display:inline-block;max-width:320px;margin-top:10px;text-decoration:none;">Vai al sito Drivenode</a>
+      </div>`;
+    return;
+  }
+
+  if (!votingIsOpen()) {
+    statusPill.textContent = "Votazioni chiuse";
+    statusPill.className = "pill closed";
+    votesLeftPill.style.display = "none";
+    footerBar.style.display = "none";
+    content.innerHTML = `
+      <div class="center-msg">
+        <div class="big">🏁</div>
+        <p>Le votazioni non sono ancora aperte (o sono terminate).<br>Riprova quando lo staff le attiva.</p>
+      </div>`;
+    return;
+  }
+
+  statusPill.textContent = "Votazioni aperte";
+  statusPill.className = "pill open";
+  votesLeftPill.style.display = "inline-block";
+  votesLeftPill.textContent = `${maxVotes - selected.length} voti rimasti`;
+  footerBar.style.display = "block";
+
+  const grid = document.createElement("div");
+  grid.className = "grid";
+  items.forEach(item => {
+    const cell = document.createElement("div");
+    const isSelected = selected.includes(item.id);
+    cell.className = "cell" + (isSelected ? " selected" : "");
+    cell.innerHTML = `${item.number}` + (item.name ? `<span class="label">${item.name}</span>` : "");
+    cell.onclick = () => toggleSelect(item.id);
+    grid.appendChild(cell);
+  });
+  content.innerHTML = "";
+  content.appendChild(grid);
+
+  const counter = document.getElementById("vote-counter");
+  counter.innerHTML = `Hai selezionato <b>${selected.length}</b> di <b>${maxVotes}</b>`;
+
+  const btn = document.getElementById("confirm-btn");
+  btn.disabled = selected.length === 0;
+  btn.textContent = selected.length === 0 ? "Seleziona almeno 1 auto" : `Conferma ${selected.length} voto${selected.length > 1 ? "i" : ""}`;
+}
+
+function toggleSelect(id) {
+  if (selected.includes(id)) {
+    selected = selected.filter(x => x !== id);
+  } else {
+    if (selected.length >= maxVotes) return;
+    selected.push(id);
+  }
+  render();
+}
+
+async function confirmVote() {
+  if (selected.length === 0) return;
+  const btn = document.getElementById("confirm-btn");
+  btn.disabled = true;
+  btn.textContent = "Invio in corso…";
+
+  for (const id of selected) {
+    await supabaseClient.rpc("increment_vote", { item_id: id });
+  }
+
+  localStorage.setItem(DEVICE_DONE_KEY, "true");
+  localStorage.setItem(DEVICE_KEY, JSON.stringify(selected));
+
+  setTimeout(() => {
+    window.location.href = config.redirect_url || "https://drivenode.netlify.app";
+  }, 1200);
+
+  render();
+}
+
+document.getElementById("confirm-btn").addEventListener("click", confirmVote);
+
+async function init() {
+  await loadConfig();
+  await loadItems();
+  render();
+  // ricontrolla periodicamente lo stato (apertura/chiusura) senza ricaricare la pagina
+  setInterval(async () => {
+    await loadConfig();
+    if (!alreadyVoted()) render();
+  }, 15000);
+}
+
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Drivenode — Admin Votazione</title>
+<link rel="stylesheet" href="assets/style.css" />
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+
+<div class="header">
+  <img src="assets/logo-circle.png" alt="Drivenode" class="logo-circle" />
+  <img src="assets/logo-wordmark.png" alt="Drivenode" class="logo-wordmark" />
+  <p>Admin · Votazione</p>
+</div>
+
+<div id="login" class="login-box">
+  <div class="card">
+    <h2>Accesso Admin</h2>
+    <div class="field">
+      <label>Password</label>
+      <input type="password" id="pwd-input" />
+    </div>
+    <button class="btn" onclick="login()">Entra</button>
+  </div>
+</div>
+
+<div id="panel" class="admin-wrap" style="display:none;">
+
+  <div class="card">
+    <h2>Stato Votazione</h2>
+    <p id="state-info" style="color:var(--gray);"></p>
+    <div class="field">
+      <label>Durata apertura (minuti)</label>
+      <input type="number" id="open-minutes" value="5" min="1" />
+    </div>
+    <button class="btn" onclick="openVoting()">▶️ Apri votazioni</button>
+    <button class="btn secondary" onclick="closeVoting()">⏸ Chiudi ora</button>
+  </div>
+
+  <div class="card">
+    <h2>Impostazioni Evento</h2>
+    <div class="field">
+      <label>Titolo evento</label>
+      <input type="text" id="cfg-title" />
+    </div>
+    <div class="field">
+      <label>Numero caselle da votare</label>
+      <div class="quick-add-row">
+        <input type="number" id="cfg-num-items" min="1" max="500" />
+        <button class="btn secondary" onclick="quickSetItems(50)">50</button>
+        <button class="btn secondary" onclick="quickSetItems(100)">100</button>
+        <button class="btn secondary" onclick="quickSetItems(150)">150</button>
+      </div>
+      <p class="qr-hint">I bottoni rapidi impostano e salvano subito il numero di caselle.</p>
+    </div>
+    <div class="field">
+      <label>Voti massimi per persona</label>
+      <input type="number" id="cfg-max-votes" min="1" max="10" />
+    </div>
+    <div class="field">
+      <label>URL di redirect dopo il voto</label>
+      <input type="text" id="cfg-redirect" />
+    </div>
+    <button class="btn" onclick="saveSettings()">💾 Salva impostazioni</button>
+  </div>
+
+  <div class="card">
+    <h2>Nomi delle caselle (opzionale)</h2>
+    <p style="color:var(--gray); font-size:0.85rem;">Lascia vuoto per mostrare solo il numero. Es: "Casella 3 → Ferrari 488 di Marco"</p>
+    <div id="items-editor"></div>
+    <button class="btn" onclick="saveItemNames()">💾 Salva nomi</button>
+  </div>
+
+  <div class="card">
+    <h2>Risultati live</h2>
+    <button class="btn secondary" onclick="loadResults()">🔄 Aggiorna</button>
+    <button class="btn secondary" onclick="resetVotes()">🗑 Azzera tutti i voti</button>
+    <table class="results-table" id="results-table"></table>
+  </div>
+
+</div>
+
+<script src="assets/config.js"></script>
+<script>
+let config = {};
+let items = [];
+
+async function login() {
+  const pwd = document.getElementById("pwd-input").value;
+  const { data } = await supabaseClient.from("config").select("value").eq("key", "admin_password").single();
+  if (data && data.value === pwd) {
+    sessionStorage.setItem("dn_admin_ok", "true");
+    document.getElementById("login").style.display = "none";
+    document.getElementById("panel").style.display = "block";
+    initPanel();
+  } else {
+    alert("Password errata");
+  }
+}
+
+async function loadConfig() {
+  const { data } = await supabaseClient.from("config").select("*");
+  config = {};
+  data.forEach(r => config[r.key] = r.value);
+}
+
+async function loadItems() {
+  const { data } = await supabaseClient.from("items").select("*").order("number", { ascending: true });
+  items = data || [];
+}
+
+function refreshStateInfo() {
+  const open = config.voting_open === "true";
+  let txt = open ? "🟢 Votazioni APERTE" : "🔴 Votazioni chiuse";
+  if (open && config.voting_closes_at) {
+    txt += ` — si chiudono alle ${new Date(config.voting_closes_at).toLocaleTimeString()}`;
+  }
+  document.getElementById("state-info").textContent = txt;
+}
+
+async function openVoting() {
+  const minutes = parseInt(document.getElementById("open-minutes").value || "5", 10);
+  const closesAt = new Date(Date.now() + minutes * 60000).toISOString();
+  await supabaseClient.from("config").update({ value: "true" }).eq("key", "voting_open");
+  await supabaseClient.from("config").update({ value: closesAt }).eq("key", "voting_closes_at");
+  await loadConfig();
+  refreshStateInfo();
+}
+
+async function closeVoting() {
+  await supabaseClient.from("config").update({ value: "false" }).eq("key", "voting_open");
+  await loadConfig();
+  refreshStateInfo();
+}
+
+async function quickSetItems(n) {
+  document.getElementById("cfg-num-items").value = n;
+  await applyNumItems(n);
+  alert(`Impostate ${n} caselle.`);
+}
+
+async function applyNumItems(numItems) {
+  await loadItems();
+  const currentCount = items.length;
+  if (numItems > currentCount) {
+    const newRows = [];
+    for (let n = currentCount + 1; n <= numItems; n++) newRows.push({ number: n, name: "" });
+    if (newRows.length) await supabaseClient.from("items").insert(newRows);
+  } else if (numItems < currentCount) {
+    const toRemove = items.filter(i => i.number > numItems).map(i => i.id);
+    if (toRemove.length) await supabaseClient.from("items").delete().in("id", toRemove);
+  }
+  await supabaseClient.from("config").update({ value: String(numItems) }).eq("key", "num_items");
+  await loadItems();
+  renderItemsEditor();
+}
+
+async function saveSettings() {
+  const title = document.getElementById("cfg-title").value;
+  const numItems = parseInt(document.getElementById("cfg-num-items").value, 10);
+  const maxVotes = document.getElementById("cfg-max-votes").value;
+  const redirect = document.getElementById("cfg-redirect").value;
+
+  await supabaseClient.from("config").update({ value: title }).eq("key", "event_title");
+  await supabaseClient.from("config").update({ value: maxVotes }).eq("key", "max_votes_per_person");
+  await supabaseClient.from("config").update({ value: redirect }).eq("key", "redirect_url");
+
+  await applyNumItems(numItems);
+
+  alert("Impostazioni salvate");
+  await loadConfig();
+}
+
+function renderItemsEditor() {
+  const wrap = document.getElementById("items-editor");
+  wrap.innerHTML = "";
+  items.forEach(item => {
+    const row = document.createElement("div");
+    row.className = "field";
+    row.innerHTML = `<label>Casella ${item.number}</label>
+      <input type="text" data-id="${item.id}" value="${item.name || ""}" placeholder="(nessun nome)" />`;
+    wrap.appendChild(row);
+  });
+}
+
+async function saveItemNames() {
+  const inputs = document.querySelectorAll("#items-editor input");
+  for (const input of inputs) {
+    const id = input.getAttribute("data-id");
+    const name = input.value;
+    await supabaseClient.from("items").update({ name }).eq("id", id);
+  }
+  alert("Nomi salvati");
+  await loadItems();
+}
+
+async function loadResults() {
+  await loadItems();
+  const table = document.getElementById("results-table");
+  const sorted = [...items].sort((a, b) => b.votes - a.votes);
+  table.innerHTML = "<tr><th>#</th><th>Nome</th><th>Voti</th></tr>" +
+    sorted.map(i => `<tr><td>${i.number}</td><td>${i.name || "-"}</td><td>${i.votes}</td></tr>`).join("");
+}
+
+async function resetVotes() {
+  if (!confirm("Sicuro di voler azzerare tutti i voti?")) return;
+  for (const item of items) {
+    await supabaseClient.from("items").update({ votes: 0 }).eq("id", item.id);
+  }
+  await loadResults();
+}
+
+async function initPanel() {
+  await loadConfig();
+  await loadItems();
+  document.getElementById("cfg-title").value = config.event_title || "";
+  document.getElementById("cfg-num-items").value = config.num_items || items.length;
+  document.getElementById("cfg-max-votes").value = config.max_votes_per_person || "3";
+  document.getElementById("cfg-redirect").value = config.redirect_url || "";
+  refreshStateInfo();
+  renderItemsEditor();
+  await loadResults();
+}
+
+if (sessionStorage.getItem("dn_admin_ok") === "true") {
+  document.getElementById("login").style.display = "none";
+  document.getElementById("panel").style.display = "block";
+  initPanel();
+}
+</script>
+</body>
+</html>
